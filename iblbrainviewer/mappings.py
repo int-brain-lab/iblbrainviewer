@@ -51,7 +51,7 @@ def get_info_dataframe(save=True):
             if np.sum(a) > 0:
                 data['node_and_leaf'].append(desc['acronym'][0])
 
-    data['node_and_leaf_acronyms'] = {d: d+'-lf' for d in data['node_and_leaf']}
+    data['node_and_leaf_acronyms'] = {d: d + '-lf' for d in data['node_and_leaf']}
     data['node_and_leaf_levels'] = {d: br.get(br.acronym2id(d))['level'][0] + 1 for d in data['node_and_leaf']}
     # 5000 -> 5028 are not allen ids so we can assign these to the extra regions
     data['node_and_leaf_ids'] = {d: 5000 + i for i, d in enumerate(data['node_and_leaf'])}

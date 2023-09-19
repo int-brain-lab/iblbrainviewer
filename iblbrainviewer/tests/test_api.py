@@ -1,15 +1,12 @@
-from iblbrainviewer.api import FeatureUploader, new_token
-
+from iblbrainviewer.api import FeatureUploader
 import unittest
-import random
 
 
 class TestApp(unittest.TestCase):
 
     def setUp(self):
         # Bucket authentication token for tests.
-        random.seed(785119511684651894)
-        self.token = new_token()
+        self.token = 'bb77d7eb-509b-4ed2-9df6-9907c3cd6ab9'
 
     def test_client(self):
         bucket_uuid = f'my{self.token}'

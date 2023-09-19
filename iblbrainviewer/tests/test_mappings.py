@@ -280,17 +280,17 @@ class TestMapValues(unittest.TestCase):
 
     def test_map_to_nodes_ids(self):
         # Case where there is no mapping
-        acronyms = np.array([1097,  797,  512,  993,  733,  272])
+        acronyms = np.array([1097, 797, 512, 993, 733, 272])
         values = np.arange(acronyms.size)
         mapper = RegionMapper(acronyms, values)
         new_acronyms = mapper.map_nodes_to_leaves()
-        assert all(new_acronyms == np.array([5003,  5019,  5000,  993,  733,  272]))
+        assert all(new_acronyms == np.array([5003, 5019, 5000, 993, 733, 272]))
         mapper = RegionMapper(-1 * acronyms, values)
         new_acronyms = mapper.map_nodes_to_leaves()
-        assert all(new_acronyms == -1 * np.array([5003,  5019,  5000,  993,  733,  272]))
+        assert all(new_acronyms == -1 * np.array([5003, 5019, 5000, 993, 733, 272]))
 
         # Case where mapping already exists
-        acronyms = np.array([1097,  5019,  5000,  993,  733,  272])
+        acronyms = np.array([1097, 5019, 5000, 993, 733, 272])
         values = np.arange(acronyms.size)
         mapper = RegionMapper(acronyms, values)
         new_acronyms = mapper.map_nodes_to_leaves()
@@ -328,7 +328,7 @@ class TestMapValues(unittest.TestCase):
         self.assertTrue('The acronyms: lala' in str(context.exception))
 
         # Now check with ids
-        acronyms = np.array([5003,  5019,  5000,  993,  733,  272])
+        acronyms = np.array([5003, 5019, 5000, 993, 733, 272])
         values = np.arange(acronyms.size)
         mapper = RegionMapper(acronyms, values)
         assert not mapper.is_acronym

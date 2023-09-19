@@ -123,7 +123,7 @@ class FeatureUploader:
                 metadata['tree'] = tree
             try:
                 self._patch_bucket(metadata)
-            except RuntimeError as e:
+            except RuntimeError:
                 # HACK: if the patching failed whereas there is a saved token, it means the
                 # bucket has been destroyed on the server. We receate it here.
                 print(f"Recreating new bucket {bucket_uuid}.")
@@ -214,7 +214,6 @@ class FeatureUploader:
         _ = params['buckets'].pop(bucket_uuid)
         self._save_params(params)
 
-
     # Global key
     # ---------------------------------------------------------------------------------------------
 
@@ -255,7 +254,7 @@ class FeatureUploader:
         metadata = metadata or {}
         metadata['token'] = self.token
         data = {'uuid': bucket_uuid, 'metadata': metadata}
-        endpoint = f'/buckets'
+        endpoint = '/buckets'
         url = self._url(endpoint)
         print(url)
         gk = self._get_global_key()
@@ -307,10 +306,9 @@ class FeatureUploader:
 
         # Make a POST request to /api/buckets/<uuid>.
         if method == 'post':
-            response = self._post(f'buckets/{self.bucket_uuid}', payload)
+            _ = self._post(f'buckets/{self.bucket_uuid}', payload)
         elif method == 'patch':
-            response = self._patch(
-                f'buckets/{self.bucket_uuid}/{fname}', payload)
+            _ = self._patch(f'buckets/{self.bucket_uuid}/{fname}', payload)
 
     def get_buckets_url(self, uuids):
         assert uuids
@@ -348,7 +346,7 @@ class FeatureUploader:
     def features_exist(self, fname):
         try:
             self.get_features(fname)
-        except RuntimeError as e:
+        except RuntimeError:
             return False
         return True
 
