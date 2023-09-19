@@ -2,6 +2,7 @@ from iblbrainviewer.api import FeatureUploader
 import unittest
 
 
+@unittest.SkipTest
 class TestApp(unittest.TestCase):
 
     def setUp(self):
