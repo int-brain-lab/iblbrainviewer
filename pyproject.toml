@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iblbrainviewer"
+description = "IBL API for atlas website"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+    {name = "IBL staff", email = "info@internationalbrainlab.org"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dynamic = ["dependencies", "version"]
+
+
+[project.urls]
+"Homepage" = "https://github.com/int-brain-lab/iblbrainviewer"
+"Website" = "https://atlas.internationalbrainlab.org"
+"Documentation" = "https://github.com/int-brain-lab/iblbrainviewer/tree/main/docs"
+"ChangeLog" = "https://github.com/int-brain-lab/iblbrainviewer/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/int-brain-lab/iblbrainviewer/issues"
+
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+version = {attr = "iblbrainviewer.__version__"}
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+iblbrainviewer = ["*.pqt"]
+
+[tool.setuptools.packages.find]
+exclude = ["iblbrainviewer.tests*", "docs*"]  # exclude packages matching these glob patterns
