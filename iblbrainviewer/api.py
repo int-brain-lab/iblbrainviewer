@@ -93,10 +93,10 @@ class FeatureUploader:
         self.params = self._load_params()
 
         # Try loading the token associated to the bucket.
-        saved_token = self._load_bucket_token(bucket_uuid)
+        saved_token = self._load_bucket_token(bucket_uuid) or token
 
         # The token can also be passed in the constructor.
-        self.token = token or saved_token or new_token()
+        self.token = saved_token or new_token()
 
         # If there is no saved token, we assume the bucket does not exist and we create it.
         if not saved_token:
@@ -256,7 +256,6 @@ class FeatureUploader:
         data = {'uuid': bucket_uuid, 'metadata': metadata}
         endpoint = '/buckets'
         url = self._url(endpoint)
-        print(url)
         gk = self._get_global_key()
         response = requests.post(url, json=data, headers=self._headers(gk), verify=not DEBUG)
         if response.status_code != 200:
