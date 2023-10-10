@@ -1,3 +1,8 @@
+## [0.2.0]
+
+### Modified
+- Modified documentation and API to refer to atlas.internationalbrainlab.org (before atlas2)
+
 ## [0.1.1]
 
 ### Modified
