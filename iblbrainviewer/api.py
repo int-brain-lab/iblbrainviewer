@@ -1,24 +1,52 @@
-from datetime import datetime
-from pathlib import Path
+# ---------------------------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------------------------
 
+from datetime import datetime
+import gzip
+from io import BytesIO
 import json
-import numpy as np
+from pathlib import Path
 import random
 import requests
 import uuid
 
+import numpy as np
+
+# import ast
+# import struct
+# from numpy.lib.format import (
+#     header_data_from_array_1_0,
+#     _write_array_header,
+#     read_magic,
+#     _check_version,
+#     _read_bytes,
+# )
+
+from iblatlas import AllenAtlas
 from iblbrainviewer.mappings import RegionMapper
 
+
+# ---------------------------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------------------------
 
 FEATURES_BASE_URL = "https://atlas.internationalbrainlab.org/"
 FEATURES_API_BASE_URL = "https://features.internationalbrainlab.org/api/"
 
 # DEBUG
-DEBUG = False
+DEBUG = True
 if DEBUG:
     FEATURES_BASE_URL = 'https://localhost:8456/'
     FEATURES_API_BASE_URL = 'https://localhost:5000/api/'
 
+DEFAULT_RES_UM = 25
+DEFAULT_VOLUME_SHAPE = (528, 320, 456)
+
+
+# ---------------------------------------------------------------------------------------------
+# Util functions
+# ---------------------------------------------------------------------------------------------
 
 def now():
     return datetime.now().isoformat()
@@ -71,6 +99,118 @@ def list_buckets():
         info = json.load(f)
     return list(info['buckets'].keys())
 
+
+def renormalize_array(arr, min_max=None):
+    # Ensure that the input array has exactly three dimensions
+    if arr.ndim != 3:
+        raise ValueError("Input array must have exactly 3 dimensions.")
+
+    # Compute the min and max values for the entire array
+    min_max = min_max if min_max is not None else (arr.min(), arr.max())
+    min_value, max_value = min_max
+
+    # Check if the array is constant (min and max values are the same)
+    if min_value == max_value:
+        return (np.ones_like(arr) * 127).astype(np.uint8)
+
+    # Normalize the entire array to [0, 255]
+    normalized_array = ((arr - min_value) / (max_value - min_value) * 255).astype(np.uint8)
+
+    return (min_value, max_value), normalized_array
+
+
+def clamp(value, min_value, max_value):
+    return min(max(value, min_value), max_value)
+
+
+# def write_npy_with_metadata(fp, arr, **metadata):
+#     info = header_data_from_array_1_0(arr)
+#     info.update(metadata)
+#     _write_array_header(fp, info, None)
+
+#     if arr.flags.f_contiguous and not arr.flags.c_contiguous:
+#         fp.write(arr.T.tobytes())
+#     else:
+#         fp.write(arr.tobytes())
+
+
+def to_npy_gz_bytes(arr, extra=None):
+    assert arr.ndim == 3
+    # (min_value, max_value), arr = renormalize_array(arr)
+
+    # path = Path(path)
+    # if str(path).endswith('.npy'):
+    #     path = path.with_suffix('.npy.gz')
+    # assert str(path).endswith('.npy.gz')
+
+    # Buffer with the NPY format bytes.
+    buffer = BytesIO()
+    np.save(buffer, arr)  # np.asfortranarray(arr))
+    buffer.seek(0)
+
+    # Buffer with the NPY gzip compressed bytes.
+    compressed_data_io = BytesIO()
+
+    # with gzip.open(path, 'wb') as gzip_file:
+    with gzip.GzipFile(fileobj=compressed_data_io, mode='wb') as gzip_file:
+        gzip_file.write(buffer.read())
+
+        # Adding extra metadata at the end of the gzipped byte buffer.
+        # additional_data = np.array([min_value, max_value], dtype=np.float32).tobytes()
+        if extra is not None:
+            extra = np.array(extra)
+            additional_data = extra.astype(np.float32).tobytes()
+            assert len(additional_data) == (4 * extra.size)
+            gzip_file.write(additional_data)
+
+    # The compressed data is now in compressed_data_io
+    return compressed_data_io.getvalue()
+
+
+def load_npy_gz(path):
+    path = Path(path)
+    assert '.npy.gz' in str(path)
+
+    # Decompress.
+    with gzip.open(path, 'rb') as gzip_file:
+        bytes = gzip_file.read()
+
+    # Read the header to get the extra metadata with the min and max value.
+    buf = BytesIO(bytes)
+    buf.seek(0)
+
+    # NOTE: below is a tentative of adding extra metadata fields in the npy header, but it doesn't
+    # work because the standard numpy npy loader checks that there are no extra metadata fields.
+    # We want generated npy to be readable b the standard npy loader.
+
+    # _header_size_info = {
+    #     (1, 0): ('<H', 'latin1'),
+    #     (2, 0): ('<I', 'latin1'),
+    #     (3, 0): ('<I', 'utf8'),
+    # }
+    # version = read_magic(buf)
+    # _check_version(version)
+    # hinfo = _header_size_info.get(version)
+    # if hinfo is None:
+    #     raise ValueError("Invalid version {!r}".format(version))
+    # hlength_type, encoding = hinfo
+    # hlength_str = _read_bytes(buf, struct.calcsize(hlength_type), "array header length")
+    # header_length = struct.unpack(hlength_type, hlength_str)[0]
+    # header = _read_bytes(buf, header_length, "array header")
+    # header = header.decode(encoding)
+    # d = ast.literal_eval(header)
+
+    # Load the array normally.
+    # buf.seek(0)
+
+    arr = np.load(buf)
+
+    return arr
+
+
+# ---------------------------------------------------------------------------------------------
+# Feature uploader
+# ---------------------------------------------------------------------------------------------
 
 class FeatureUploader:
     def __init__(self, bucket_uuid, short_desc=None, long_desc=None, tree=None, token=None):
@@ -270,13 +410,6 @@ class FeatureUploader:
         if response.status_code != 200:
             raise RuntimeError(response.text)
 
-    def _delete_bucket(self):
-        # Make a DELETE request to /api/buckets/<uuid> to delete the bucket
-        return self._delete(f'/buckets/{self.bucket_uuid}')
-
-    # Public methods
-    # ---------------------------------------------------------------------------------------------
-
     def _post_or_patch_features(
             self, method, fname, acronyms, values, short_desc=None, hemisphere=None, map_nodes=False):
 
@@ -308,6 +441,13 @@ class FeatureUploader:
             _ = self._post(f'buckets/{self.bucket_uuid}', payload)
         elif method == 'patch':
             _ = self._patch(f'buckets/{self.bucket_uuid}/{fname}', payload)
+
+    def _delete_bucket(self):
+        # Make a DELETE request to /api/buckets/<uuid> to delete the bucket
+        return self._delete(f'/buckets/{self.bucket_uuid}')
+
+    # Public methods
+    # ---------------------------------------------------------------------------------------------
 
     def get_buckets_url(self, uuids):
         assert uuids
@@ -356,3 +496,60 @@ class FeatureUploader:
 
     def delete_features(self, fname):
         self._delete(f'/buckets/{self.bucket_uuid}/{fname}')
+
+    def create_volume(self, volume, min_max=None, res_um=DEFAULT_RES_UM):
+        assert volume.ndim == 3
+        assert volume.shape == DEFAULT_VOLUME_SHAPE
+
+        # Renormalize the volume array if it is not already in uint8
+        if volume.dtype == np.uint8:
+            volume_8 = volume
+            min_max = volume_8.min(), volume_8.max()
+        else:
+            min_max, volume_8 = renormalize_array(volume, min_max=min_max)
+
+        # Convert the uint8 volume into a npy.gz buffer.
+        bytes = to_npy_gz_bytes(volume_8, extra=min_max)
+        assert bytes is not None
+
+        # TODO: upload the bytes to the server
+
+    def create_dots(self, xyz, values, dot_size=3, min_max=None, res_um=DEFAULT_RES_UM):
+        assert xyz.ndim == 2
+        assert xyz.shape[0] > 0
+        assert xyz.shape[1] == 3
+        assert dot_size >= 1
+
+        n = xyz.shape[0]
+        assert values.ndim == 1
+        assert values.shape == (n,)
+
+        a = AllenAtlas()
+
+        shape = a.bc.nxyz
+        # shape is (456, 528, 320)
+
+        shape = (shape[1], shape[2], shape[0])
+        # shape is now (528, 320, 456)
+
+        assert shape == DEFAULT_VOLUME_SHAPE
+
+        # Create an empty volume.
+        volume = np.zeros(shape, dtype=np.float32)
+
+        # Get the voxel coordinates of the dots.
+        i, j, k = a.bc.xyz2i(xyz, mode='clip').T
+
+        a, b, c = shape
+
+        s = dot_size // 2
+        for u in (-s, 0, +s):
+            for v in (-s, 0, +s):
+                for w in (-s, 0, +s):
+                    # NOTE: j, k, i because of transposition
+                    volume[
+                        clamp(j + u, 0, a - 1),
+                        clamp(k + v, 0, b - 1),
+                        clamp(i + w, 0, c - 1)] = values
+
+        return self.create_volume(volume, min_max=min_max, res_um=res_um)
