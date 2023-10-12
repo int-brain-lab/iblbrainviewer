@@ -23,7 +23,7 @@ import numpy as np
 #     _read_bytes,
 # )
 
-from iblatlas import AllenAtlas
+from iblatlas.atlas import AllenAtlas
 from iblbrainviewer.mappings import RegionMapper
 
 
