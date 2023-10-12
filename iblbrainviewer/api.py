@@ -2,6 +2,7 @@
 # Imports
 # ---------------------------------------------------------------------------------------------
 
+import base64
 from datetime import datetime
 import gzip
 from io import BytesIO
@@ -121,6 +122,17 @@ def renormalize_array(arr, min_max=None):
 
 def clamp(value, min_value, max_value):
     return min(max(value, min_value), max_value)
+
+
+def base64_encode(input_string):
+    encoded_bytes = base64.b64encode(input_string)
+    encoded_string = encoded_bytes.decode('utf-8')
+    return encoded_string
+
+
+def base64_decode(encoded_string):
+    decoded_bytes = base64.b64decode(encoded_string.encode('utf-8'))
+    return decoded_bytes
 
 
 # def write_npy_with_metadata(fp, arr, **metadata):
@@ -410,12 +422,11 @@ class FeatureUploader:
         if response.status_code != 200:
             raise RuntimeError(response.text)
 
-    def _post_or_patch_features(
-            self, method, fname, acronyms, values, short_desc=None, hemisphere=None, map_nodes=False):
+    def _post_or_patch_features(self, method, fname, acronyms, values,
+                                short_desc=None, hemisphere=None, map_nodes=False):
 
         assert method in ('post', 'patch')
         assert fname
-        # assert mapping
         assert acronyms is not None
         assert values is not None
         assert len(acronyms) == len(values)
@@ -433,6 +444,43 @@ class FeatureUploader:
                     'beryl': feature_dict(data['beryl']['index'], data['beryl']['values']),
                     'cosmos': feature_dict(data['cosmos']['index'], data['cosmos']['values']),
                 }
+            }
+        }
+
+        # Make a POST request to /api/buckets/<uuid>.
+        if method == 'post':
+            _ = self._post(f'buckets/{self.bucket_uuid}', payload)
+        elif method == 'patch':
+            _ = self._patch(f'buckets/{self.bucket_uuid}/{fname}', payload)
+
+    def _post_or_patch_volume(
+            self, method, fname, volume, short_desc=None, min_max=None):
+
+        assert method in ('post', 'patch')
+        assert fname
+
+        assert volume.ndim == 3
+        assert volume.shape == DEFAULT_VOLUME_SHAPE
+
+        # Renormalize the volume array if it is not already in uint8
+        if volume.dtype == np.uint8:
+            volume_8 = volume
+            min_max = volume_8.min(), volume_8.max()
+        else:
+            min_max, volume_8 = renormalize_array(volume, min_max=min_max)
+
+        # Convert the uint8 volume into a npy.gz buffer.
+        bytes = to_npy_gz_bytes(volume_8, extra=min_max)
+        assert bytes is not None
+
+        volume_b64 = base64_encode(bytes)
+
+        # Prepare the JSON payload.
+        payload = {
+            'fname': fname,
+            'short_desc': short_desc,
+            'feature_data': {
+                'volume': volume_b64
             }
         }
 
@@ -462,10 +510,17 @@ class FeatureUploader:
         self._delete_bucket()
         self._delete_bucket_token(self.bucket_uuid)
 
-    def create_features(self, fname, acronyms, values, desc=None, hemisphere=None, map_nodes=False):
+    def create_features(self, fname, acronyms, values, desc=None,
+                        hemisphere=None, map_nodes=False):
         """Create new features in the bucket."""
         self._post_or_patch_features(
-            'post', fname, acronyms, values, short_desc=desc, hemisphere=hemisphere, map_nodes=map_nodes)
+            'post',
+            fname,
+            acronyms,
+            values,
+            short_desc=desc,
+            hemisphere=hemisphere,
+            map_nodes=map_nodes)
 
     def get_bucket_metadata(self):
         response = self._get(f'buckets/{self.bucket_uuid}')
@@ -483,6 +538,7 @@ class FeatureUploader:
         return features
 
     def features_exist(self, fname):
+        """Determine weather features exist in the bucket."""
         try:
             self.get_features(fname)
         except RuntimeError:
@@ -492,29 +548,24 @@ class FeatureUploader:
     def patch_features(self, fname, acronyms, values, desc=None, hemisphere=None, map_nodes=False):
         """Update existing features in the bucket."""
         self._post_or_patch_features(
-            'patch', fname, acronyms, values, short_desc=desc, hemisphere=hemisphere, map_nodes=map_nodes)
+            'patch',
+            fname,
+            acronyms,
+            values,
+            short_desc=desc,
+            hemisphere=hemisphere,
+            map_nodes=map_nodes)
 
     def delete_features(self, fname):
+        """Delete existing features in the bucket."""
         self._delete(f'/buckets/{self.bucket_uuid}/{fname}')
 
-    def create_volume(self, volume, min_max=None, res_um=DEFAULT_RES_UM):
-        assert volume.ndim == 3
-        assert volume.shape == DEFAULT_VOLUME_SHAPE
-
-        # Renormalize the volume array if it is not already in uint8
-        if volume.dtype == np.uint8:
-            volume_8 = volume
-            min_max = volume_8.min(), volume_8.max()
-        else:
-            min_max, volume_8 = renormalize_array(volume, min_max=min_max)
-
-        # Convert the uint8 volume into a npy.gz buffer.
-        bytes = to_npy_gz_bytes(volume_8, extra=min_max)
-        assert bytes is not None
-
-        # TODO: upload the bytes to the server
+    def create_volume(self, fname, volume, min_max=None, desc=None, res_um=DEFAULT_RES_UM):
+        """Create a new volume in the bucket."""
+        self._post_or_patch_volume('post', fname, volume, min_max=min_max, short_desc=desc)
 
     def create_dots(self, xyz, values, dot_size=3, min_max=None, res_um=DEFAULT_RES_UM):
+        """Create a new volume in the bucket, starting from points."""
         assert xyz.ndim == 2
         assert xyz.shape[0] > 0
         assert xyz.shape[1] == 3
@@ -553,3 +604,11 @@ class FeatureUploader:
                         clamp(i + w, 0, c - 1)] = values
 
         return self.create_volume(volume, min_max=min_max, res_um=res_um)
+
+    def patch_volume(self, fname, volume, min_max=None, desc=None):
+        """Update existing volume in the bucket."""
+        self._post_or_patch_volume('patch', fname, volume, min_max=min_max, short_desc=desc)
+
+    def delete_volume(self, fname):
+        """Delete existing volume in the bucket."""
+        self._delete(f'/buckets/{self.bucket_uuid}/{fname}')
