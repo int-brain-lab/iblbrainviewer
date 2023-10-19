@@ -135,29 +135,10 @@ def base64_decode(encoded_string):
     return decoded_bytes
 
 
-# def write_npy_with_metadata(fp, arr, **metadata):
-#     info = header_data_from_array_1_0(arr)
-#     info.update(metadata)
-#     _write_array_header(fp, info, None)
-
-#     if arr.flags.f_contiguous and not arr.flags.c_contiguous:
-#         fp.write(arr.T.tobytes())
-#     else:
-#         fp.write(arr.tobytes())
-
-
 def to_npy_gz_bytes(arr, extra=None):
-    assert arr.ndim == 3
-    # (min_value, max_value), arr = renormalize_array(arr)
-
-    # path = Path(path)
-    # if str(path).endswith('.npy'):
-    #     path = path.with_suffix('.npy.gz')
-    # assert str(path).endswith('.npy.gz')
-
     # Buffer with the NPY format bytes.
     buffer = BytesIO()
-    np.save(buffer, arr)  # np.asfortranarray(arr))
+    np.save(buffer, arr)
     buffer.seek(0)
 
     # Buffer with the NPY gzip compressed bytes.
@@ -217,6 +198,21 @@ def load_npy_gz(path):
 
     arr = np.load(buf)
 
+    return arr
+
+
+def encode_array(arr, dtype=np.float32):
+    return base64_encode(to_npy_gz_bytes(arr.astype(dtype)))
+
+
+def decode_array(s):
+    bytes = base64_decode(s)
+    compressed_data_io = BytesIO(bytes)
+    with gzip.GzipFile(fileobj=compressed_data_io, mode='rb') as gzip_file:
+        uncompressed = gzip_file.read()
+    buf = BytesIO(uncompressed)
+    buf.seek(0)
+    arr = np.load(buf)
     return arr
 
 
@@ -433,8 +429,6 @@ class FeatureUploader:
 
         # Prepare the JSON payload.
         data = make_features(acronyms, values, hemisphere=hemisphere, map_nodes=map_nodes)
-        # assert 'data' in data
-        # assert 'statistics' in data
         payload = {
             'fname': fname,
             'short_desc': short_desc,
@@ -454,7 +448,9 @@ class FeatureUploader:
             _ = self._patch(f'buckets/{self.bucket_uuid}/{fname}', payload)
 
     def _post_or_patch_volume(
-            self, method, fname, volume, short_desc=None, min_max=None):
+            self, method, fname, volume,
+            xyz=None, values=None,
+            short_desc=None, min_max=None):
 
         assert method in ('post', 'patch')
         assert fname
@@ -480,9 +476,14 @@ class FeatureUploader:
             'fname': fname,
             'short_desc': short_desc,
             'feature_data': {
-                'volume': volume_b64
+                'volume': volume_b64,
             }
         }
+
+        # Optional xyz/values data when using create_dots()
+        if xyz is not None and values is not None:
+            payload['feature_data']['xyz'] = encode_array(xyz)
+            payload['feature_data']['values'] = encode_array(values)
 
         # Make a POST request to /api/buckets/<uuid>.
         if method == 'post':
@@ -510,7 +511,7 @@ class FeatureUploader:
         self._delete_bucket()
         self._delete_bucket_token(self.bucket_uuid)
 
-    def create_features(self, fname, acronyms, values, desc=None,
+    def create_features(self, fname, acronyms, values, short_desc=None,
                         hemisphere=None, map_nodes=False):
         """Create new features in the bucket."""
         self._post_or_patch_features(
@@ -518,7 +519,7 @@ class FeatureUploader:
             fname,
             acronyms,
             values,
-            short_desc=desc,
+            short_desc=short_desc,
             hemisphere=hemisphere,
             map_nodes=map_nodes)
 
@@ -545,14 +546,15 @@ class FeatureUploader:
             return False
         return True
 
-    def patch_features(self, fname, acronyms, values, desc=None, hemisphere=None, map_nodes=False):
+    def patch_features(self, fname, acronyms, values, short_desc=None,
+                       hemisphere=None, map_nodes=False):
         """Update existing features in the bucket."""
         self._post_or_patch_features(
             'patch',
             fname,
             acronyms,
             values,
-            short_desc=desc,
+            short_desc=short_desc,
             hemisphere=hemisphere,
             map_nodes=map_nodes)
 
@@ -560,12 +562,16 @@ class FeatureUploader:
         """Delete existing features in the bucket."""
         self._delete(f'/buckets/{self.bucket_uuid}/{fname}')
 
-    def create_volume(self, fname, volume, min_max=None, desc=None, res_um=DEFAULT_RES_UM):
+    def upload_volume(self, fname, volume, min_max=None, short_desc=None, patch=False, **kwargs):
         """Create a new volume in the bucket."""
-        self._post_or_patch_volume('post', fname, volume, min_max=min_max, short_desc=desc)
+        self._post_or_patch_volume(
+            'post' if not patch else 'patch',
+            fname, volume, min_max=min_max, short_desc=short_desc, **kwargs)
 
-    def create_dots(self, xyz, values, dot_size=3, min_max=None, res_um=DEFAULT_RES_UM):
+    def upload_dots(self, fname, xyz, values, dot_size=3, min_max=None,
+                    patch=False, short_desc=None):
         """Create a new volume in the bucket, starting from points."""
+        assert fname
         assert xyz.ndim == 2
         assert xyz.shape[0] > 0
         assert xyz.shape[1] == 3
@@ -599,15 +605,13 @@ class FeatureUploader:
                 for w in (-s, 0, +s):
                     # NOTE: j, k, i because of transposition
                     volume[
-                        clamp(j + u, 0, a - 1),
-                        clamp(k + v, 0, b - 1),
-                        clamp(i + w, 0, c - 1)] = values
+                        np.clip(j + u, 0, a - 1),
+                        np.clip(k + v, 0, b - 1),
+                        np.clip(i + w, 0, c - 1)] = values
 
-        return self.create_volume(volume, min_max=min_max, res_um=res_um)
-
-    def patch_volume(self, fname, volume, min_max=None, desc=None):
-        """Update existing volume in the bucket."""
-        self._post_or_patch_volume('patch', fname, volume, min_max=min_max, short_desc=desc)
+        return self.upload_volume(
+            fname, volume, min_max=min_max, short_desc=short_desc, patch=patch,
+            xyz=xyz, values=values)
 
     def delete_volume(self, fname):
         """Delete existing volume in the bucket."""
