@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from iblatlas.regions import BrainRegions
-from iblbrainviewer.api import DEFAULT_VOLUME_SHAPE, FeatureUploader
+from iblbrainviewer.api import DEFAULT_VOLUME_SHAPE, FeatureUploader, decode_array
 
 
 @unittest.SkipTest
@@ -108,3 +108,30 @@ class TestApp(unittest.TestCase):
         # Patch the features.
         arr[distance <= radius] = 2.0
         up.patch_volume(fname, arr)
+
+    def test_client_dots(self):
+
+        bucket = 'test_bucket'
+        fname = 'mydots'
+        # tree = {'my test dots': fname}
+
+        # Create or load the bucket.
+        up = FeatureUploader(bucket, token=self.token)
+
+        # Create the features.
+        short_desc = "these are my dots"
+        n = 10000
+        xyz = np.random.normal(scale=1e-3, size=(n, 3)).astype(np.float32)
+        values = np.random.uniform(low=0, high=1, size=(n,)).astype(np.float32)
+        up.upload_dots(fname, xyz, values, short_desc=short_desc, patch=up.features_exist(fname))
+
+        # Retrieve one feature.
+        features = up.get_features(fname)
+        self.assertTrue(features['feature_data']['volume'])
+        self.assertEqual(features['short_desc'], short_desc)
+
+        xyz = decode_array(features['feature_data']['xyz'])
+        values = decode_array(features['feature_data']['values'])
+
+        self.assertEqual(xyz.shape, (n, 3))
+        self.assertEqual(values.shape, (n,))
