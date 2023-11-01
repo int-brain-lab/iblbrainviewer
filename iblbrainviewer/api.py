@@ -531,10 +531,13 @@ class FeatureUploader:
         """Return the list of fnames in the bucket."""
         return self.get_bucket_metadata()['features']
 
-    def get_features(self, fname):
+    def get_features(self, fname, download=None):
         """Retrieve features in the bucket."""
         assert fname
-        response = self._get(f'/buckets/{self.bucket_uuid}/{fname}')
+        url = f'/buckets/{self.bucket_uuid}/{fname}'
+        if download:
+            url += '?download=1'
+        response = self._get(url)
         features = response.json()
         return features
 
@@ -612,6 +615,12 @@ class FeatureUploader:
         return self.upload_volume(
             fname, volume, min_max=min_max, short_desc=short_desc, patch=patch,
             xyz=xyz, values=values)
+
+    def download_features(self, fname, saveas):
+        features = self.get_features(fname, download=True)
+        with open(saveas, 'w') as f:
+            json.dump(features, f, indent=1)
+        return features
 
     def delete_volume(self, fname):
         """Delete existing volume in the bucket."""

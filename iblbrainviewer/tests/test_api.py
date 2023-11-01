@@ -43,6 +43,8 @@ class TestApp(unittest.TestCase):
         values[1] = 10
         up.patch_features(fname, acronyms, values, hemisphere='left')
 
+        # up.download_features(fname, 'downloaded_feature_file.json')
+
         # Delete the bucket
         # up.delete_bucket()
 
