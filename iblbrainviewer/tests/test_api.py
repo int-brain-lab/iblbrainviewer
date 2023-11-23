@@ -31,9 +31,9 @@ class TestApp(unittest.TestCase):
 
         self.temp_dir = Path(tempfile.mkdtemp())
 
-    # def tearDown(self):
-    #     if os.path.exists(self.temp_dir):
-    #         shutil.rmtree(self.temp_dir)
+    def tearDown(self):
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
 
     def test_client(self):
         bucket_uuid = f'my_bucket_{self.token}'
