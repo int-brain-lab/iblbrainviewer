@@ -79,6 +79,107 @@ def make_features(acronyms, values, hemisphere=None, map_nodes=False):
     return mapper.map_regions()
 
 
+def make_features_payload(fname, data, short_desc=''):
+    return {
+        'fname': fname,
+        'short_desc': short_desc,
+        'feature_data': {
+            'mappings': {
+                'allen': feature_dict(data['allen']['index'], data['allen']['values']),
+                'beryl': feature_dict(data['beryl']['index'], data['beryl']['values']),
+                'cosmos': feature_dict(data['cosmos']['index'], data['cosmos']['values']),
+            }
+        }
+    }
+
+
+def make_volume_payload(
+        fname, volume, xyz=None, values=None, short_desc=None, min_max=None):
+    assert fname
+
+    assert volume.ndim == 3
+    assert volume.shape == DEFAULT_VOLUME_SHAPE
+
+    # Renormalize the volume array if it is not already in uint8
+    if volume.dtype == np.uint8:
+        volume_8 = volume
+        min_max = volume_8.min(), volume_8.max()
+    else:
+        min_max, volume_8 = renormalize_array(volume, min_max=min_max)
+
+    # Convert the uint8 volume into a npy.gz buffer.
+    bytes = to_npy_gz_bytes(volume_8, extra=min_max)
+    assert bytes is not None
+
+    volume_b64 = base64_encode(bytes)
+
+    # Prepare the JSON payload.
+    payload = {
+        'fname': fname,
+        'short_desc': short_desc,
+        'feature_data': {
+            'volume': volume_b64,
+        }
+    }
+
+    # Optional xyz/values data when using create_dots()
+    if xyz is not None and values is not None:
+        payload['feature_data']['xyz'] = encode_array(xyz)
+        payload['feature_data']['values'] = encode_array(values)
+
+    return payload
+
+
+def make_dots_volume(xyz, values, dot_size=3):
+    assert xyz.ndim == 2
+    assert xyz.shape[0] > 0
+    assert xyz.shape[1] == 3
+    assert dot_size >= 1
+
+    n = xyz.shape[0]
+    assert values.ndim == 1
+    assert values.shape == (n,)
+
+    a = AllenAtlas()
+
+    shape = a.bc.nxyz
+    # shape is (456, 528, 320)
+
+    shape = (shape[1], shape[2], shape[0])
+    # shape is now (528, 320, 456)
+
+    assert shape == DEFAULT_VOLUME_SHAPE
+
+    # Create an empty volume.
+    volume = np.zeros(shape, dtype=np.float32)
+
+    # Get the voxel coordinates of the dots.
+    i, j, k = a.bc.xyz2i(xyz, mode='clip').T
+
+    a, b, c = shape
+
+    s = dot_size // 2
+    for u in (-s, 0, +s):
+        for v in (-s, 0, +s):
+            for w in (-s, 0, +s):
+                # NOTE: j, k, i because of transposition
+                volume[
+                    np.clip(j + u, 0, a - 1),
+                    np.clip(k + v, 0, b - 1),
+                    np.clip(i + w, 0, c - 1)] = values
+
+    return volume
+
+
+def save_payload(output_dir, fname, payload):
+    if not output_dir:
+        raise ValueError("please provide an output_dir, directory that will contain the saved json file")
+    output_dir = Path(output_dir)
+    filename = output_dir / f"{fname}.json"
+    with open(filename, 'w') as f:
+        json.dump(payload, f)
+
+
 def feature_dict(aids, values):
 
     return {
@@ -221,7 +322,7 @@ def decode_array(s):
 # ---------------------------------------------------------------------------------------------
 
 class FeatureUploader:
-    def __init__(self, bucket_uuid, short_desc=None, long_desc=None, tree=None, token=None):
+    def __init__(self, bucket_uuid='local', short_desc=None, long_desc=None, tree=None, token=None):
         # Go in user dir and search bucket UUID and token
         # If nothing create new ones and save on disk, and create on the server
         # with post request
@@ -239,6 +340,10 @@ class FeatureUploader:
 
         # Load the param file.
         self.params = self._load_params()
+
+        # NOTE: skip the bucket creation/management logic when using a special local bucket
+        if bucket_uuid == 'local':
+            return
 
         # Try loading the token associated to the bucket.
         saved_token = self._load_bucket_token(bucket_uuid) or token
@@ -393,7 +498,7 @@ class FeatureUploader:
         assert gk
         return gk
 
-    # Bucket creation
+    # Bucket management
     # ---------------------------------------------------------------------------------------------
 
     def _create_new_bucket(self, bucket_uuid, metadata=None):
@@ -418,6 +523,13 @@ class FeatureUploader:
         if response.status_code != 200:
             raise RuntimeError(response.text)
 
+    def _delete_bucket(self):
+        # Make a DELETE request to /api/buckets/<uuid> to delete the bucket
+        return self._delete(f'/buckets/{self.bucket_uuid}')
+
+    # Feature upload
+    # ---------------------------------------------------------------------------------------------
+
     def _post_or_patch_features(self, method, fname, acronyms, values,
                                 short_desc=None, hemisphere=None, map_nodes=False):
 
@@ -429,17 +541,7 @@ class FeatureUploader:
 
         # Prepare the JSON payload.
         data = make_features(acronyms, values, hemisphere=hemisphere, map_nodes=map_nodes)
-        payload = {
-            'fname': fname,
-            'short_desc': short_desc,
-            'feature_data': {
-                'mappings': {
-                    'allen': feature_dict(data['allen']['index'], data['allen']['values']),
-                    'beryl': feature_dict(data['beryl']['index'], data['beryl']['values']),
-                    'cosmos': feature_dict(data['cosmos']['index'], data['cosmos']['values']),
-                }
-            }
-        }
+        payload = make_features_payload(fname, data, short_desc=short_desc)
 
         # Make a POST request to /api/buckets/<uuid>.
         if method == 'post':
@@ -453,37 +555,10 @@ class FeatureUploader:
             short_desc=None, min_max=None):
 
         assert method in ('post', 'patch')
-        assert fname
 
-        assert volume.ndim == 3
-        assert volume.shape == DEFAULT_VOLUME_SHAPE
-
-        # Renormalize the volume array if it is not already in uint8
-        if volume.dtype == np.uint8:
-            volume_8 = volume
-            min_max = volume_8.min(), volume_8.max()
-        else:
-            min_max, volume_8 = renormalize_array(volume, min_max=min_max)
-
-        # Convert the uint8 volume into a npy.gz buffer.
-        bytes = to_npy_gz_bytes(volume_8, extra=min_max)
-        assert bytes is not None
-
-        volume_b64 = base64_encode(bytes)
-
-        # Prepare the JSON payload.
-        payload = {
-            'fname': fname,
-            'short_desc': short_desc,
-            'feature_data': {
-                'volume': volume_b64,
-            }
-        }
-
-        # Optional xyz/values data when using create_dots()
-        if xyz is not None and values is not None:
-            payload['feature_data']['xyz'] = encode_array(xyz)
-            payload['feature_data']['values'] = encode_array(values)
+        # Make the volume payload.
+        payload = make_volume_payload(
+            fname, volume, xyz=xyz, values=values, short_desc=short_desc, min_max=min_max)
 
         # Make a POST request to /api/buckets/<uuid>.
         if method == 'post':
@@ -491,11 +566,7 @@ class FeatureUploader:
         elif method == 'patch':
             _ = self._patch(f'buckets/{self.bucket_uuid}/{fname}', payload)
 
-    def _delete_bucket(self):
-        # Make a DELETE request to /api/buckets/<uuid> to delete the bucket
-        return self._delete(f'/buckets/{self.bucket_uuid}')
-
-    # Public methods
+    # Bucket public methods
     # ---------------------------------------------------------------------------------------------
 
     def get_buckets_url(self, uuids):
@@ -504,6 +575,10 @@ class FeatureUploader:
         # NOTE: %2C is a comma encoded
         return f'{FEATURES_BASE_URL}?buckets={"%2C".join(uuids)}&bucket={uuids[0]}'
 
+    def get_bucket_metadata(self):
+        response = self._get(f'buckets/{self.bucket_uuid}')
+        return response.json()
+
     def patch_bucket(self, **metadata):
         self._patch_bucket(metadata)
 
@@ -511,8 +586,11 @@ class FeatureUploader:
         self._delete_bucket()
         self._delete_bucket_token(self.bucket_uuid)
 
-    def create_features(self, fname, acronyms, values, short_desc=None,
-                        hemisphere=None, map_nodes=False):
+    # Feature public methods
+    # ---------------------------------------------------------------------------------------------
+
+    def create_features(
+            self, fname, acronyms, values, short_desc=None, hemisphere=None, map_nodes=False):
         """Create new features in the bucket."""
         self._post_or_patch_features(
             'post',
@@ -522,10 +600,6 @@ class FeatureUploader:
             short_desc=short_desc,
             hemisphere=hemisphere,
             map_nodes=map_nodes)
-
-    def get_bucket_metadata(self):
-        response = self._get(f'buckets/{self.bucket_uuid}')
-        return response.json()
 
     def list_features(self):
         """Return the list of fnames in the bucket."""
@@ -565,6 +639,9 @@ class FeatureUploader:
         """Delete existing features in the bucket."""
         self._delete(f'/buckets/{self.bucket_uuid}/{fname}')
 
+    # Volume public methods
+    # ---------------------------------------------------------------------------------------------
+
     def upload_volume(self, fname, volume, min_max=None, short_desc=None, patch=False, **kwargs):
         """Create a new volume in the bucket."""
         self._post_or_patch_volume(
@@ -575,53 +652,41 @@ class FeatureUploader:
                     patch=False, short_desc=None):
         """Create a new volume in the bucket, starting from points."""
         assert fname
-        assert xyz.ndim == 2
-        assert xyz.shape[0] > 0
-        assert xyz.shape[1] == 3
-        assert dot_size >= 1
-
-        n = xyz.shape[0]
-        assert values.ndim == 1
-        assert values.shape == (n,)
-
-        a = AllenAtlas()
-
-        shape = a.bc.nxyz
-        # shape is (456, 528, 320)
-
-        shape = (shape[1], shape[2], shape[0])
-        # shape is now (528, 320, 456)
-
-        assert shape == DEFAULT_VOLUME_SHAPE
-
-        # Create an empty volume.
-        volume = np.zeros(shape, dtype=np.float32)
-
-        # Get the voxel coordinates of the dots.
-        i, j, k = a.bc.xyz2i(xyz, mode='clip').T
-
-        a, b, c = shape
-
-        s = dot_size // 2
-        for u in (-s, 0, +s):
-            for v in (-s, 0, +s):
-                for w in (-s, 0, +s):
-                    # NOTE: j, k, i because of transposition
-                    volume[
-                        np.clip(j + u, 0, a - 1),
-                        np.clip(k + v, 0, b - 1),
-                        np.clip(i + w, 0, c - 1)] = values
-
+        volume = make_dots_volume(xyz, values, dot_size=dot_size)
         return self.upload_volume(
             fname, volume, min_max=min_max, short_desc=short_desc, patch=patch,
             xyz=xyz, values=values)
+
+    def delete_volume(self, fname):
+        """Delete existing volume in the bucket."""
+        self._delete(f'/buckets/{self.bucket_uuid}/{fname}')
+
+    # Local methods
+    # ---------------------------------------------------------------------------------------------
+
+    def local_features(
+            self, fname, acronyms, values, short_desc=None, hemisphere=None, map_nodes=False,
+            output_dir=None):
+        data = make_features(acronyms, values, hemisphere=hemisphere, map_nodes=map_nodes)
+        payload = make_features_payload(fname, data, short_desc=short_desc)
+        save_payload(output_dir, fname, payload)
+
+    def local_volume(self, fname, volume, min_max=None, xyz=None, values=None, short_desc=None, output_dir=None):
+        payload = make_volume_payload(
+            fname, volume, xyz=xyz, values=values, short_desc=short_desc, min_max=min_max)
+        save_payload(output_dir, fname, payload)
+
+    def local_dots(self, fname, xyz, values, dot_size=3, min_max=None, short_desc=None, output_dir=None):
+        volume = make_dots_volume(xyz, values, dot_size=dot_size)
+        self.local_volume(
+            fname, volume, xyz=xyz, values=values,
+            min_max=min_max, short_desc=short_desc, output_dir=output_dir)
+
+    # Download methods
+    # ---------------------------------------------------------------------------------------------
 
     def download_features(self, fname, saveas):
         features = self.get_features(fname, download=True)
         with open(saveas, 'w') as f:
             json.dump(features, f, indent=1)
         return features
-
-    def delete_volume(self, fname):
-        """Delete existing volume in the bucket."""
-        self._delete(f'/buckets/{self.bucket_uuid}/{fname}')
