@@ -126,7 +126,7 @@ class TestApp(unittest.TestCase):
 
         # Patch the features.
         arr[distance <= radius] = 2.0
-        up.patch_volume(fname, arr)
+        up.upload_volume(fname, arr, patch=True)
 
     def test_client_dots(self):
 
