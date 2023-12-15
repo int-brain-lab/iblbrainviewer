@@ -1,3 +1,10 @@
+## [1.0.0]
+
+### Added
+- API for volume and point upload
+- Local bucket API
+- Additional docs for new volume and point features
+
 ## [0.2.0]
 
 ### Modified
