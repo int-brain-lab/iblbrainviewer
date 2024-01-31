@@ -1,3 +1,11 @@
+## [1.1.0]
+
+## Modified
+- Added link to google colab from notebooks
+
+## Added
+- Added index.html in docs folder 
+
 ## [1.0.0]
 
 ### Added
