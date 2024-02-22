@@ -34,6 +34,7 @@ from iblbrainviewer.mappings import RegionMapper
 
 FEATURES_BASE_URL = "https://atlas.internationalbrainlab.org/"
 FEATURES_API_BASE_URL = "https://features.internationalbrainlab.org/api/"
+VIZ_BASE_URL = "https://viz.internationalbrainlab.org/"
 
 # DEBUG
 DEBUG = False
@@ -94,7 +95,7 @@ def make_features_payload(fname, data, short_desc=''):
 
 
 def make_volume_payload(
-        fname, volume, xyz=None, values=None, short_desc=None, min_max=None):
+        fname, volume, xyz=None, values=None, pids=None, cids=None, short_desc=None, min_max=None):
     assert fname
 
     assert volume.ndim == 3
@@ -126,6 +127,8 @@ def make_volume_payload(
     if xyz is not None and values is not None:
         payload['feature_data']['xyz'] = encode_array(xyz)
         payload['feature_data']['values'] = encode_array(values)
+        if pids is not None and cids is not None:
+            payload['feature_data']['urls'] = encode_array(create_urls(pids, cids), dtype=str)
 
     return payload
 
@@ -316,6 +319,16 @@ def decode_array(s):
     arr = np.load(buf)
     return arr
 
+
+def convert2url(pid, cid):
+    return f'{VIZ_BASE_URL}/api/session/{pid}/cluster_qc_plot/{cid}'
+
+
+def create_urls(pids, cids):
+    urls = np.empty((pids.size), dtype=str)
+    for i, (pid, cid) in enumerate(zip(pids, cids)):
+        urls[i] = convert2url(pid, cid)
+    return urls
 
 # ---------------------------------------------------------------------------------------------
 # Feature uploader
@@ -671,16 +684,17 @@ class FeatureUploader:
         payload = make_features_payload(fname, data, short_desc=short_desc)
         save_payload(output_dir, fname, payload)
 
-    def local_volume(self, fname, volume, min_max=None, xyz=None, values=None, short_desc=None, output_dir=None):
+    def local_volume(self, fname, volume, min_max=None, xyz=None, values=None, pids=None, cids=None, short_desc=None, output_dir=None):
         payload = make_volume_payload(
-            fname, volume, xyz=xyz, values=values, short_desc=short_desc, min_max=min_max)
+            fname, volume, xyz=xyz, values=values, pids=pids, cids=cids, short_desc=short_desc, min_max=min_max)
         save_payload(output_dir, fname, payload)
 
-    def local_dots(self, fname, xyz, values, dot_size=3, min_max=None, short_desc=None, output_dir=None):
+    def local_dots(self, fname, xyz, values, pids=None, cids=None, dot_size=3, min_max=None, short_desc=None, output_dir=None):
         volume = make_dots_volume(xyz, values, dot_size=dot_size)
         self.local_volume(
-            fname, volume, xyz=xyz, values=values,
+            fname, volume, xyz=xyz, values=values, pids=pids, cids=cids,
             min_max=min_max, short_desc=short_desc, output_dir=output_dir)
+
 
     # Download methods
     # ---------------------------------------------------------------------------------------------
