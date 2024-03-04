@@ -306,7 +306,8 @@ def load_npy_gz(path):
 
 
 def encode_array(arr, dtype=np.float32):
-    return base64_encode(to_npy_gz_bytes(arr.astype(dtype)))
+    arr = np.asarray(arr, dtype=dtype)
+    return base64_encode(to_npy_gz_bytes(arr))
 
 
 def decode_array(s):
@@ -325,10 +326,8 @@ def convert2url(pid, cid):
 
 
 def create_urls(pids, cids):
-    urls = np.empty((pids.size), dtype=str)
-    for i, (pid, cid) in enumerate(zip(pids, cids)):
-        urls[i] = convert2url(pid, cid)
-    return urls
+    return [convert2url(pid, cid) for (pid, cid) in zip(pids, cids)]
+
 
 # ---------------------------------------------------------------------------------------------
 # Feature uploader
@@ -694,7 +693,6 @@ class FeatureUploader:
         self.local_volume(
             fname, volume, xyz=xyz, values=values, pids=pids, cids=cids,
             min_max=min_max, short_desc=short_desc, output_dir=output_dir)
-
 
     # Download methods
     # ---------------------------------------------------------------------------------------------
