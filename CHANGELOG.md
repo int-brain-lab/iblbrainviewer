@@ -1,3 +1,8 @@
+## [1.1.1]
+
+## Modified
+- Changed github actions pypi publish workflow to use tokens
+
 ## [1.1.0]
 
 ## Modified
