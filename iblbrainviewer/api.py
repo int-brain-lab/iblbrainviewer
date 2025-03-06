@@ -553,9 +553,8 @@ class FeatureUploader:
     # ---------------------------------------------------------------------------------------------
 
     def _post_or_patch_features(
-        self, method, fname, acronyms, values,
-        short_desc=None, hemisphere=None, map_nodes=False,
-        key='mean', extra_values=None):
+            self, method, fname, acronyms, values, short_desc=None, hemisphere=None, map_nodes=False,
+            key='mean', extra_values=None):
 
         assert method in ('post', 'patch')
         assert fname
@@ -615,7 +614,7 @@ class FeatureUploader:
 
     def create_features(
             self, fname, acronyms, values, short_desc=None, hemisphere=None, map_nodes=False,
-             key='mean', extra_values=None):
+            key='mean', extra_values=None):
         """Create new features in the bucket."""
         self._post_or_patch_features(
             'post',
@@ -649,8 +648,8 @@ class FeatureUploader:
         return True
 
     def patch_features(
-        self, fname, acronyms, values, short_desc=None,
-        hemisphere=None, map_nodes=False, key='mean', extra_values=None):
+            self, fname, acronyms, values, short_desc=None,
+            hemisphere=None, map_nodes=False, key='mean', extra_values=None):
         """Update existing features in the bucket."""
         self._post_or_patch_features(
             'patch',
