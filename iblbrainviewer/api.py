@@ -7,22 +7,13 @@ from datetime import datetime
 import gzip
 from io import BytesIO
 import json
+from math import isnan
 from pathlib import Path
 import random
 import requests
 import uuid
 
 import numpy as np
-
-# import ast
-# import struct
-# from numpy.lib.format import (
-#     header_data_from_array_1_0,
-#     _write_array_header,
-#     read_magic,
-#     _check_version,
-#     _read_bytes,
-# )
 
 from iblatlas.atlas import AllenAtlas
 from iblbrainviewer.mappings import RegionMapper
@@ -58,141 +49,6 @@ def new_token(max_length=None):
     if max_length:
         token = token[:max_length]
     return token
-
-
-def create_bucket_metadata(
-        bucket_uuid, alias=None, short_desc=None, long_desc=None, url=None, tree=None):
-    return {
-        'uuid': bucket_uuid,
-        'alias': alias,
-        'url': url,
-        'tree': tree,
-        'short_desc': short_desc,
-        'long_desc': long_desc,
-        'token': new_token(),
-        'last_access_date': now(),
-    }
-
-
-def make_features(acronyms, values, hemisphere=None, map_nodes=False):
-    mapper = RegionMapper(acronyms, values, hemisphere=hemisphere, map_nodes=map_nodes)
-    return mapper.map_regions()
-
-
-def make_features_payload(fname, data, short_desc=''):
-    return {
-        'fname': fname,
-        'short_desc': short_desc,
-        'feature_data': {
-            'mappings': {
-                'allen': feature_dict(data['allen']['index'], data['allen']['values']),
-                'beryl': feature_dict(data['beryl']['index'], data['beryl']['values']),
-                'cosmos': feature_dict(data['cosmos']['index'], data['cosmos']['values']),
-            }
-        }
-    }
-
-
-def make_volume_payload(
-        fname, volume, xyz=None, values=None, short_desc=None, min_max=None):
-    assert fname
-
-    assert volume.ndim == 3
-    assert volume.shape == DEFAULT_VOLUME_SHAPE
-
-    # Renormalize the volume array if it is not already in uint8
-    if volume.dtype == np.uint8:
-        volume_8 = volume
-        min_max = volume_8.min(), volume_8.max()
-    else:
-        min_max, volume_8 = renormalize_array(volume, min_max=min_max)
-
-    # Convert the uint8 volume into a npy.gz buffer.
-    bytes = to_npy_gz_bytes(volume_8, extra=min_max)
-    assert bytes is not None
-
-    volume_b64 = base64_encode(bytes)
-
-    # Prepare the JSON payload.
-    payload = {
-        'fname': fname,
-        'short_desc': short_desc,
-        'feature_data': {
-            'volume': volume_b64,
-        }
-    }
-
-    # Optional xyz/values data when using create_dots()
-    if xyz is not None and values is not None:
-        payload['feature_data']['xyz'] = encode_array(xyz)
-        payload['feature_data']['values'] = encode_array(values)
-
-    return payload
-
-
-def make_dots_volume(xyz, values, dot_size=3):
-    assert xyz.ndim == 2
-    assert xyz.shape[0] > 0
-    assert xyz.shape[1] == 3
-    assert dot_size >= 1
-
-    n = xyz.shape[0]
-    assert values.ndim == 1
-    assert values.shape == (n,)
-
-    a = AllenAtlas()
-
-    shape = a.bc.nxyz
-    # shape is (456, 528, 320)
-
-    shape = (shape[1], shape[2], shape[0])
-    # shape is now (528, 320, 456)
-
-    assert shape == DEFAULT_VOLUME_SHAPE
-
-    # Create an empty volume.
-    volume = np.zeros(shape, dtype=np.float32)
-
-    # Get the voxel coordinates of the dots.
-    i, j, k = a.bc.xyz2i(xyz, mode='clip').T
-
-    a, b, c = shape
-
-    s = dot_size // 2
-    for u in (-s, 0, +s):
-        for v in (-s, 0, +s):
-            for w in (-s, 0, +s):
-                # NOTE: j, k, i because of transposition
-                volume[
-                    np.clip(j + u, 0, a - 1),
-                    np.clip(k + v, 0, b - 1),
-                    np.clip(i + w, 0, c - 1)] = values
-
-    return volume
-
-
-def save_payload(output_dir, fname, payload):
-    if not output_dir:
-        raise ValueError("please provide an output_dir, directory that will contain the saved json file")
-    output_dir = Path(output_dir)
-    filename = output_dir / f"{fname}.json"
-    with open(filename, 'w') as f:
-        json.dump(payload, f)
-
-
-def feature_dict(aids, values):
-
-    return {
-        'data': {int(aid): {'mean': float(value)} for aid, value in zip(aids, values)},
-        'statistics': {
-            'mean': {
-                'min': values.min(),
-                'max': values.max(),
-                'mean': values.mean(),
-                'median': np.median(values)
-            }
-        },
-    }
 
 
 def list_buckets():
@@ -315,6 +171,172 @@ def decode_array(s):
     buf.seek(0)
     arr = np.load(buf)
     return arr
+
+
+# ---------------------------------------------------------------------------------------------
+# Data generation
+# ---------------------------------------------------------------------------------------------
+
+def create_bucket_metadata(
+        bucket_uuid, alias=None, short_desc=None, long_desc=None, url=None, tree=None):
+    return {
+        'uuid': bucket_uuid,
+        'alias': alias,
+        'url': url,
+        'tree': tree,
+        'short_desc': short_desc,
+        'long_desc': long_desc,
+        'token': new_token(),
+        'last_access_date': now(),
+    }
+
+
+def float_json(x):
+    return float(f'{x:.6g}') if not isnan(x) else None
+
+
+def _stats(values):
+    values = np.asarray(values)
+    return {
+        'min': float_json(values.min()),
+        'max': float_json(values.max()),
+        'mean': float_json(values.mean()),
+        'median': float_json(np.median(values)),
+        'std': float_json(values.std()),
+    }
+
+
+def feature_dict(aids, values, key='mean', extra_values=None):
+    extra_values = extra_values or {}
+    out = {
+        'data': {},
+        'statistics': {}
+    }
+    for i, aid in enumerate(aids):
+        aid = int(aid)
+        out['data'][aid] = {
+            key: float_json(values[i])
+        }
+        for ekey, evalues in extra_values.items():
+            out['data'][aid][ekey] = float_json(evalues[i])
+
+    out['statistics'][key] = _stats(values)
+    if extra_values:
+        for ekey, evalues in extra_values.items():
+            out['statistics'][ekey] = _stats(evalues)
+
+    return out
+
+
+def make_features(acronyms, values, hemisphere=None, map_nodes=False):
+    mapper = RegionMapper(acronyms, values, hemisphere=hemisphere, map_nodes=map_nodes)
+    return mapper.map_regions()
+
+
+def make_features_payload(fname, data, short_desc='', key='mean', extra_values=None):
+    extra_values = extra_values or {}
+    return {
+        'fname': fname,
+        'short_desc': short_desc,
+        'feature_data': {
+            'mappings': {
+                mapping: feature_dict(
+                    data[mapping]['index'],
+                    data[mapping]['values'],
+                    key=key,
+                    extra_values={stat: evalues[mapping]['values'] for stat, evalues in extra_values.items()}
+                )
+                for mapping in data.keys()
+            }
+        }
+    }
+
+
+def make_volume_payload(
+        fname, volume, xyz=None, values=None, short_desc=None, min_max=None):
+    assert fname
+
+    assert volume.ndim == 3
+    assert volume.shape == DEFAULT_VOLUME_SHAPE
+
+    # Renormalize the volume array if it is not already in uint8
+    if volume.dtype == np.uint8:
+        volume_8 = volume
+        min_max = volume_8.min(), volume_8.max()
+    else:
+        min_max, volume_8 = renormalize_array(volume, min_max=min_max)
+
+    # Convert the uint8 volume into a npy.gz buffer.
+    bytes = to_npy_gz_bytes(volume_8, extra=min_max)
+    assert bytes is not None
+
+    volume_b64 = base64_encode(bytes)
+
+    # Prepare the JSON payload.
+    payload = {
+        'fname': fname,
+        'short_desc': short_desc,
+        'feature_data': {
+            'volume': volume_b64,
+        }
+    }
+
+    # Optional xyz/values data when using create_dots()
+    if xyz is not None and values is not None:
+        payload['feature_data']['xyz'] = encode_array(xyz)
+        payload['feature_data']['values'] = encode_array(values)
+
+    return payload
+
+
+def make_dots_volume(xyz, values, dot_size=3):
+    assert xyz.ndim == 2
+    assert xyz.shape[0] > 0
+    assert xyz.shape[1] == 3
+    assert dot_size >= 1
+
+    n = xyz.shape[0]
+    assert values.ndim == 1
+    assert values.shape == (n,)
+
+    a = AllenAtlas()
+
+    shape = a.bc.nxyz
+    # shape is (456, 528, 320)
+
+    shape = (shape[1], shape[2], shape[0])
+    # shape is now (528, 320, 456)
+
+    assert shape == DEFAULT_VOLUME_SHAPE
+
+    # Create an empty volume.
+    volume = np.zeros(shape, dtype=np.float32)
+
+    # Get the voxel coordinates of the dots.
+    i, j, k = a.bc.xyz2i(xyz, mode='clip').T
+
+    a, b, c = shape
+
+    s = dot_size // 2
+    for u in (-s, 0, +s):
+        for v in (-s, 0, +s):
+            for w in (-s, 0, +s):
+                # NOTE: j, k, i because of transposition
+                volume[
+                    np.clip(j + u, 0, a - 1),
+                    np.clip(k + v, 0, b - 1),
+                    np.clip(i + w, 0, c - 1)] = values
+
+    return volume
+
+
+def save_payload(output_dir, fname, payload):
+    if not output_dir:
+        raise ValueError("please provide an output_dir, directory that will contain the saved json file")
+    output_dir = Path(output_dir)
+    filename = output_dir / f"{fname}.json"
+    with open(filename, 'w') as f:
+        json.dump(payload, f, indent=1, sort_keys=True)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -530,8 +552,10 @@ class FeatureUploader:
     # Feature upload
     # ---------------------------------------------------------------------------------------------
 
-    def _post_or_patch_features(self, method, fname, acronyms, values,
-                                short_desc=None, hemisphere=None, map_nodes=False):
+    def _post_or_patch_features(
+        self, method, fname, acronyms, values,
+        short_desc=None, hemisphere=None, map_nodes=False,
+        key='mean', extra_values=None):
 
         assert method in ('post', 'patch')
         assert fname
@@ -541,7 +565,7 @@ class FeatureUploader:
 
         # Prepare the JSON payload.
         data = make_features(acronyms, values, hemisphere=hemisphere, map_nodes=map_nodes)
-        payload = make_features_payload(fname, data, short_desc=short_desc)
+        payload = make_features_payload(fname, data, short_desc=short_desc, key=key, extra_values=extra_values)
 
         # Make a POST request to /api/buckets/<uuid>.
         if method == 'post':
@@ -590,7 +614,8 @@ class FeatureUploader:
     # ---------------------------------------------------------------------------------------------
 
     def create_features(
-            self, fname, acronyms, values, short_desc=None, hemisphere=None, map_nodes=False):
+            self, fname, acronyms, values, short_desc=None, hemisphere=None, map_nodes=False,
+             key='mean', extra_values=None):
         """Create new features in the bucket."""
         self._post_or_patch_features(
             'post',
@@ -623,8 +648,9 @@ class FeatureUploader:
             return False
         return True
 
-    def patch_features(self, fname, acronyms, values, short_desc=None,
-                       hemisphere=None, map_nodes=False):
+    def patch_features(
+        self, fname, acronyms, values, short_desc=None,
+        hemisphere=None, map_nodes=False, key='mean', extra_values=None):
         """Update existing features in the bucket."""
         self._post_or_patch_features(
             'patch',
@@ -633,7 +659,10 @@ class FeatureUploader:
             values,
             short_desc=short_desc,
             hemisphere=hemisphere,
-            map_nodes=map_nodes)
+            map_nodes=map_nodes,
+            key=key,
+            extra_values=extra_values,
+        )
 
     def delete_features(self, fname):
         """Delete existing features in the bucket."""
