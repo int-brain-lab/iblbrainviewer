@@ -191,18 +191,33 @@ def create_bucket_metadata(
     }
 
 
-def float_json(x):
-    return float(f'{x:.6g}') if not isnan(x) else None
+def scalar_np2py(x):
+    if isinstance(x, (str, int)):
+        return x
+    elif isinstance(x, float):
+        return float(f'{x:.6g}')
+    elif isinstance(x, dict):
+        return {k: scalar_np2py(v) for k, v in x.items()}
+    elif isinstance(x, (list, np.ndarray)):
+        return [scalar_np2py(v) for v in x]
+    elif isnan(x):
+        return None
+    elif np.issubdtype(x.dtype, np.floating):
+        return float(f'{x:.6g}')
+    elif np.issubdtype(x.dtype, np.integer):
+        return int(x)
+    return x
 
 
 def _stats(values):
+    """Compute the statistics of each value and extra value."""
     values = np.asarray(values)
     return {
-        'min': float_json(values.min()),
-        'max': float_json(values.max()),
-        'mean': float_json(values.mean()),
-        'median': float_json(np.median(values)),
-        'std': float_json(values.std()),
+        'min': scalar_np2py(values.min()),
+        'max': scalar_np2py(values.max()),
+        'mean': scalar_np2py(values.mean()),
+        'median': scalar_np2py(np.median(values)),
+        'std': scalar_np2py(values.std()),
     }
 
 
@@ -214,28 +229,32 @@ def feature_dict(aids, values, key='mean', extra_values=None):
     }
     for i, aid in enumerate(aids):
         aid = int(aid)
+        v = values[i]
         out['data'][aid] = {
-            key: float_json(values[i])
+            key: scalar_np2py(v)
         }
         for ekey, evalues in extra_values.items():
-            out['data'][aid][ekey] = float_json(evalues[i])
+            ev = evalues[i]
+            out['data'][aid][ekey] = scalar_np2py(ev)
 
     out['statistics'][key] = _stats(values)
     if extra_values:
         for ekey, evalues in extra_values.items():
-            out['statistics'][ekey] = _stats(evalues)
+            # NOTE: histogram stats are useless
+            if not ekey.startswith('h_'):
+                out['statistics'][ekey] = _stats(evalues)
 
     return out
 
 
-def make_features(acronyms, values, hemisphere=None, map_nodes=False):
-    mapper = RegionMapper(acronyms, values, hemisphere=hemisphere, map_nodes=map_nodes)
+def make_features(acronyms, values, **kwargs):
+    mapper = RegionMapper(acronyms, values, **kwargs)
     return mapper.map_regions()
 
 
-def make_features_payload(fname, data, short_desc='', key='mean', extra_values=None):
+def make_features_payload(fname, data, short_desc='', key='mean', extra_values=None, **kwargs):
     extra_values = extra_values or {}
-    return {
+    payload = {
         'fname': fname,
         'short_desc': short_desc,
         'feature_data': {
@@ -250,6 +269,8 @@ def make_features_payload(fname, data, short_desc='', key='mean', extra_values=N
             }
         }
     }
+    payload['feature_data'].update(scalar_np2py(kwargs))
+    return payload
 
 
 def make_volume_payload(
