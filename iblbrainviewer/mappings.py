@@ -84,7 +84,7 @@ def read_region_tree():
 
 
 class RegionMapper:
-    def __init__(self, regions, values, hemisphere=None, map_nodes=False):
+    def __init__(self, regions, values, hemisphere=None, map_nodes=False, agg='mean'):
         """
         Class to map array of regions and values to Allen, Swanson, Beryl (IBL) and Cosmos (IBL) mappings
         :param regions: np.array of Allen acronyms or atlas ids
@@ -94,12 +94,14 @@ class RegionMapper:
         they act as parents to other regions but also contain voxels in the annotation volume. If map_nodes=False, these
         regions are considered as nodes in the tree and their value will be propagated down the hierachy. If map_nodes=True,
         they will be considered as a leaf node underneath their region.
+        :param: agg: how to aggregate values from multiple regions to a larger region
         """
         self.br = BrainRegions()
         self.df = pd.read_parquet(Path(__file__).parent.joinpath('region_info.pqt'))
-        self.regions = np.array(regions)
-        self.values = np.array(values)
+        self.regions = np.asarray(regions)
+        self.values = np.asarray(values)
         self.hemisphere = hemisphere
+        self.agg = agg
 
         assert self.regions.size == self.values.size, "Regions and values must have the same size"
 
@@ -423,7 +425,10 @@ class RegionMapper:
         isin, iloc = ismember(mapped_ids, self.br.id)
 
         mapped_df = pd.DataFrame({'regions': iloc, 'vals': values})
-        mapped_vals = mapped_df.groupby('regions').mean()
+        if self.agg != 'mean':
+            mapped_vals = getattr(mapped_df.groupby('regions'), self.agg)()
+        else:
+            mapped_vals = mapped_df.groupby('regions').mean()
 
         return mapped_vals.index.values, mapped_vals.vals.values
 
@@ -491,7 +496,10 @@ class RegionMapper:
             else:
                 isin, _ = ismember(acronyms, np.array(v))
                 if np.sum(isin) > 0:
-                    val = np.mean(values[isin])
+                    if self.agg != 'mean':
+                        val = getattr(np, self.agg)(values[isin])
+                    else:
+                        val = np.mean(values[isin])
                     lookup[k] = val
                     # We need to add these into the acronyms so that they are considered when we sum up the tree
                     acronyms = np.r_[acronyms, np.array(k, dtype=object)]
