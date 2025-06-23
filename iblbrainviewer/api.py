@@ -7,7 +7,7 @@ from datetime import datetime
 import gzip
 from io import BytesIO
 import json
-from math import isnan
+from math import isnan, isinf
 from pathlib import Path
 import random
 import requests
@@ -192,20 +192,27 @@ def create_bucket_metadata(
 
 
 def scalar_np2py(x):
-    if isinstance(x, (str, int)):
-        return x
-    elif isinstance(x, float):
-        return float(f'{x:.6g}')
-    elif isinstance(x, dict):
+
+    if isinstance(x, dict):
         return {k: scalar_np2py(v) for k, v in x.items()}
+
     elif isinstance(x, (list, np.ndarray)):
         return [scalar_np2py(v) for v in x]
-    elif isnan(x):
+
+    elif isnan(x) or isinf(x):
         return None
-    elif np.issubdtype(x.dtype, np.floating):
-        return float(f'{x:.6g}')
-    elif np.issubdtype(x.dtype, np.integer):
+
+    elif (isinstance(x, (str, int)) or
+          (isinstance(x, np.generic) and np.issubdtype(x.dtype, np.integer))):
         return int(x)
+
+    elif (isinstance(x, float) or
+          (isinstance(x, np.generic) and np.issubdtype(x.dtype, np.floating))):
+        return float(f'{x:.6g}')
+
+    else:
+        print("************* UNKNOWN TYPE ***********", x, type(x))
+
     return x
 
 
