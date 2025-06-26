@@ -34,6 +34,7 @@ if DEBUG:
 
 DEFAULT_RES_UM = 25
 DEFAULT_VOLUME_SHAPE = (528, 320, 456)
+N_BINS = 50
 
 
 # ---------------------------------------------------------------------------------------------
@@ -174,22 +175,8 @@ def decode_array(s):
 
 
 # ---------------------------------------------------------------------------------------------
-# Data generation
+# Data functions
 # ---------------------------------------------------------------------------------------------
-
-def create_bucket_metadata(
-        bucket_uuid, alias=None, short_desc=None, long_desc=None, url=None, tree=None):
-    return {
-        'uuid': bucket_uuid,
-        'alias': alias,
-        'url': url,
-        'tree': tree,
-        'short_desc': short_desc,
-        'long_desc': long_desc,
-        'token': new_token(),
-        'last_access_date': now(),
-    }
-
 
 def scalar_np2py(x):
 
@@ -216,6 +203,20 @@ def scalar_np2py(x):
     return x
 
 
+def compute_histogram(data, bins=None):
+    assert bins is not None
+    n = len(data)
+    vmin = bins[0]
+    vmax = bins[-1]
+    counts, _ = np.histogram(data, bins=bins)
+    return {
+        'total_count': int(n),
+        'vmin': float(vmin),
+        'vmax': float(vmax),
+        'counts': scalar_np2py(counts),
+    }
+
+
 def _stats(values):
     """Compute the statistics of each value and extra value."""
     values = np.asarray(values)
@@ -225,6 +226,29 @@ def _stats(values):
         'mean': scalar_np2py(values.mean()),
         'median': scalar_np2py(np.median(values)),
         'std': scalar_np2py(values.std()),
+    }
+
+
+def make_histogram(data, vmin, vmax, n_bins=N_BINS):
+    bins = np.histogram_bin_edges(data, range=(vmin, vmax), bins=n_bins)
+    return compute_histogram(data, bins=bins)
+
+
+# ---------------------------------------------------------------------------------------------
+# Data generation
+# ---------------------------------------------------------------------------------------------
+
+def create_bucket_metadata(
+        bucket_uuid, alias=None, short_desc=None, long_desc=None, url=None, tree=None):
+    return {
+        'uuid': bucket_uuid,
+        'alias': alias,
+        'url': url,
+        'tree': tree,
+        'short_desc': short_desc,
+        'long_desc': long_desc,
+        'token': new_token(),
+        'last_access_date': now(),
     }
 
 
@@ -259,7 +283,8 @@ def make_features(acronyms, values, **kwargs):
     return mapper.map_regions()
 
 
-def make_features_payload(fname, data, short_desc='', key='mean', extra_values=None, **kwargs):
+def make_features_payload(
+        fname, data, short_desc='', key='mean', extra_values=None, histogram_range=None, **kwargs):
     extra_values = extra_values or {}
     payload = {
         'fname': fname,
@@ -270,14 +295,20 @@ def make_features_payload(fname, data, short_desc='', key='mean', extra_values=N
                     data[mapping]['index'],
                     data[mapping]['values'],
                     key=key,
-                    extra_values={stat: evalues[mapping]['values'] for stat, evalues in extra_values.items()}
+                    extra_values={stat: evalues[mapping]['values']
+                                  for stat, evalues in extra_values.items()}
                 )
                 for mapping in data.keys()
             }
         }
     }
     payload['feature_data'].update(scalar_np2py(kwargs))
+
     return payload
+
+
+def add_payload_histogram(payload, data, vmin, vmax):
+    payload['feature_data']['histogram'] = make_histogram(data, vmin, vmax)
 
 
 def make_volume_payload(
@@ -285,7 +316,7 @@ def make_volume_payload(
     assert fname
 
     assert volume.ndim == 3
-    assert volume.shape == DEFAULT_VOLUME_SHAPE
+    assert volume.shape == DEFAULT_VOLUME_SHAPE, f"{volume.shape} != {DEFAULT_VOLUME_SHAPE}"
 
     # Renormalize the volume array if it is not already in uint8
     if volume.dtype == np.uint8:
@@ -360,7 +391,8 @@ def make_dots_volume(xyz, values, dot_size=3):
 
 def save_payload(output_dir, fname, payload):
     if not output_dir:
-        raise ValueError("please provide an output_dir, directory that will contain the saved json file")
+        raise ValueError(
+            "please provide an output_dir, directory that will contain the saved json file")
     output_dir = Path(output_dir)
     filename = output_dir / f"{fname}.json"
     with open(filename, 'w') as f:
@@ -592,7 +624,8 @@ class FeatureUploader:
 
         # Prepare the JSON payload.
         data = make_features(acronyms, values, hemisphere=hemisphere, map_nodes=map_nodes)
-        payload = make_features_payload(fname, data, short_desc=short_desc, key=key, extra_values=extra_values)
+        payload = make_features_payload(
+            fname, data, short_desc=short_desc, key=key, extra_values=extra_values)
 
         # Make a POST request to /api/buckets/<uuid>.
         if method == 'post':
