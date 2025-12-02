@@ -49,5 +49,6 @@ exclude = ["iblbrainviewer.tests*", "docs*"]  # exclude packages matching these 
 
 [dependency-groups]
 dev = [
+    "ipython>=8.12.3",
     "pytest>=8.3.5",
 ]
