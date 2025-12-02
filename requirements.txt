@@ -1,3 +1,4 @@
+# Mirrors the dependencies from pyproject.toml; keep this list in sync.
 numpy
 requests
 iblatlas

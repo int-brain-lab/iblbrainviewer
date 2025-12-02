@@ -17,7 +17,14 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-dynamic = ["dependencies", "version"]
+dependencies = [
+    "numpy",
+    "requests",
+    "iblatlas",
+    "iblutil",
+]
+
+dynamic = ["version"]
 
 
 [project.urls]
@@ -29,7 +36,6 @@ dynamic = ["dependencies", "version"]
 
 
 [tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
 version = {attr = "iblbrainviewer.__version__"}
 
 [tool.setuptools]
@@ -40,3 +46,8 @@ iblbrainviewer = ["*.pqt"]
 
 [tool.setuptools.packages.find]
 exclude = ["iblbrainviewer.tests*", "docs*"]  # exclude packages matching these glob patterns
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
