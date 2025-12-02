@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import os
+from pprint import pprint
 import shutil
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from iblbrainviewer.api import DEFAULT_VOLUME_SHAPE, FeatureUploader, decode_arr
 def mock_volume(radius):
     # Create a ball volume.
     shape = DEFAULT_VOLUME_SHAPE
+    shape = np.array(shape) // 8
     arr = np.zeros(shape, dtype=np.float32)
     center = (shape[0] // 2, shape[1] // 2, shape[2] // 2)
     i, j, k = np.ogrid[:shape[0], :shape[1], :shape[2]]
@@ -155,7 +157,7 @@ class TestApp(unittest.TestCase):
         self.assertEqual(xyz.shape, (n, 3))
         self.assertEqual(values.shape, (n,))
 
-    def test_local(self):
+    def test_local_features(self):
         # Local feature uploader
         up = FeatureUploader()
 
@@ -169,15 +171,22 @@ class TestApp(unittest.TestCase):
             fet = json.load(f)
             self.assertEqual(fet['feature_data']['mappings']['allen']['data']['1863']['mean'], 420)
 
+    def test_local_volume(self):
+        up = FeatureUploader()
+
         # Volume.
         fname = 'vol'
         radius = 100
-        arr, _ = mock_volume(radius)
-        up.local_volume(fname, arr, output_dir=self.temp_dir)
+        _, arr = mock_volume(radius)
+        arr = np.transpose(arr, [0, 2, 1])
+        up.local_volume(fname, {"mean": arr}, output_dir=self.temp_dir)
 
         with open(self.temp_dir / f'{fname}.json', 'r') as f:
             fet = json.load(f)
-            self.assertTrue(len(fet['feature_data']['volume']) > 65536)
+            self.assertTrue(len(fet['feature_data']['volumes']['mean']['volume']) > 1024)
+
+    def test_local_dots(self):
+        up = FeatureUploader()
 
         # Dots.
         fname = 'dots'

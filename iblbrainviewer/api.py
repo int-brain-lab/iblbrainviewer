@@ -38,6 +38,149 @@ N_BINS = 50
 
 
 # ---------------------------------------------------------------------------------------------
+# Volume region histogram
+# ---------------------------------------------------------------------------------------------
+
+class VolumeRegionHistogrammer:
+    """
+    Compute per-region histograms for a 3D volume aligned (or downsampled)
+    to the AllenAtlas label volume.
+    """
+
+    def __init__(self, res_um=50, n_bins=N_BINS):
+        self.atlas = AllenAtlas(res_um=res_um)
+        self.labels = self.atlas.label  # (AP, ML, DV), int indices into atlas.regions
+        # Prefer n_lr if present, otherwise fall back to total number of regions
+        self.n_regions = int(getattr(self.atlas.regions, "n_lr",
+                                     self.atlas.regions.id.size))
+        self.n_bins = int(n_bins)
+        # Precompute some things for formatting
+        self._bin_key_width = len(str(self.n_bins - 1))
+
+    def _upsample_to_labels(self, volume):
+        """
+        If `volume` is downsampled by an integer factor along each axis,
+        upsample it back to the atlas label shape using nearest-neighbour
+        (np.repeat). Assumes same axis order as self.labels.
+        """
+        if volume.shape == self.labels.shape:
+            return volume
+
+        if volume.ndim != 3 or self.labels.ndim != 3:
+            raise ValueError("Both volume and atlas labels must be 3D arrays")
+
+        vshape = np.array(volume.shape, dtype=int)
+        lshape = np.array(self.labels.shape, dtype=int)
+
+        if np.any(lshape % vshape != 0):
+            raise ValueError(
+                f"Volume shape {tuple(vshape)} not an integer divisor of "
+                f"atlas label shape {tuple(lshape)}"
+            )
+
+        factors = (lshape // vshape).astype(int)
+        if not np.all(factors == factors[0]):
+            raise ValueError(
+                f"Non-uniform downsampling factors per axis: {tuple(factors)}"
+            )
+
+        up = volume
+        for axis, f in enumerate(factors):
+            if f != 1:
+                up = np.repeat(up, f, axis=axis)
+
+        if up.shape != self.labels.shape:
+            raise RuntimeError(
+                f"Upsampled volume shape {up.shape} != label shape {self.labels.shape}"
+            )
+        return up
+
+    def __call__(self, volume, min_max, out):
+        """
+        Fills `out` with per-region voxel counts and histogram bins.
+
+        Parameters
+        ----------
+        volume : 3D np.ndarray (float)
+            Volume of scalar values, same orientation as AllenAtlas.label.
+            May be downsampled by an integer factor relative to the atlas.
+            Outside-brain voxels are NaN.
+        min_max : (float, float)
+            Histogram range (min, max).
+        out : dict
+            Dictionary modified in-place. For each region_idx < atlas.regions.n_lr:
+                out[region_idx]["count"] = number of non-NaN voxels in region
+                out[region_idx]["h_XXX"] = count in histogram bin XXX
+        """
+        vmin, vmax = min_max
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+            raise ValueError(f"Invalid min_max range: {min_max}")
+
+        # 1) Match resolution with atlas label volume
+        vol = np.asarray(volume, dtype=float)
+        vol = self._upsample_to_labels(vol)
+        labels = self.labels
+
+        # 2) Flatten and build masks
+        vol_flat = vol.ravel()
+        lab_flat = labels.ravel().astype(np.int64)
+
+        # Valid voxels: non-NaN, region index in [0, n_regions)
+        non_nan = ~np.isnan(vol_flat)
+        in_region_range = (lab_flat >= 0) & (lab_flat < self.n_regions)
+        valid_all = non_nan & in_region_range
+
+        # For "count" we count all non-NaN voxels in each region
+        regs_all = lab_flat[valid_all]
+
+        # For histogram, also require value within [vmin, vmax]
+        vals = vol_flat[valid_all]
+        in_range = (vals >= vmin) & (vals <= vmax)
+        vals = vals[in_range]
+        regs = regs_all[in_range]
+
+        # 3) Map values to bin indices [0, n_bins-1]
+        # Note: values exactly == vmax go into the last bin.
+        span = vmax - vmin
+        bin_pos = (vals - vmin) / span * self.n_bins
+        bin_indices = np.floor(bin_pos).astype(np.int64)
+        bin_indices = np.clip(bin_indices, 0, self.n_bins - 1)
+
+        # 4) Global bincount over (region, bin)
+        # combined_index = region_idx * n_bins + bin_idx
+        combined = regs * self.n_bins + bin_indices
+        hist_flat = np.bincount(
+            combined,
+            minlength=self.n_regions * self.n_bins
+        )
+        hist2d = hist_flat.reshape(self.n_regions, self.n_bins)
+
+        # 5) Per-region voxel counts (non-NaN within region, regardless of value range)
+        counts = np.bincount(regs_all, minlength=self.n_regions)
+
+        # 6) Write into `out`
+        for region_idx in range(self.n_regions):
+            region_hist = hist2d[region_idx]
+            region_count = int(counts[region_idx])
+            if region_count == 0:
+                continue
+
+            region_dict = out.setdefault(region_idx, {})
+            region_dict["count"] = region_count
+
+            # h_000, h_001, ... with zero-padded indices
+            for b in range(self.n_bins):
+                key = f"h_{b:0{self._bin_key_width}d}"
+                v = int(region_hist[b])
+                if v > 0:
+                    region_dict[key] = v
+
+
+# Convenience function with the requested signature
+_default_histogrammer = VolumeRegionHistogrammer(res_um=50, n_bins=N_BINS)
+
+
+# ---------------------------------------------------------------------------------------------
 # Util functions
 # ---------------------------------------------------------------------------------------------
 
@@ -93,7 +236,7 @@ def base64_decode(encoded_string):
     return decoded_bytes
 
 
-def to_npy_gz_bytes(arr, extra=None):
+def to_npy_gz_bytes(arr):
     # Buffer with the NPY format bytes.
     buffer = BytesIO()
     np.save(buffer, arr)
@@ -105,14 +248,6 @@ def to_npy_gz_bytes(arr, extra=None):
     # with gzip.open(path, 'wb') as gzip_file:
     with gzip.GzipFile(fileobj=compressed_data_io, mode='wb') as gzip_file:
         gzip_file.write(buffer.read())
-
-        # Adding extra metadata at the end of the gzipped byte buffer.
-        # additional_data = np.array([min_value, max_value], dtype=np.float32).tobytes()
-        if extra is not None:
-            extra = np.array(extra)
-            additional_data = extra.astype(np.float32).tobytes()
-            assert len(additional_data) == (4 * extra.size)
-            gzip_file.write(additional_data)
 
     # The compressed data is now in compressed_data_io
     return compressed_data_io.getvalue()
@@ -126,36 +261,9 @@ def load_npy_gz(path):
     with gzip.open(path, 'rb') as gzip_file:
         bytes = gzip_file.read()
 
-    # Read the header to get the extra metadata with the min and max value.
     buf = BytesIO(bytes)
     buf.seek(0)
-
-    # NOTE: below is a tentative of adding extra metadata fields in the npy header, but it doesn't
-    # work because the standard numpy npy loader checks that there are no extra metadata fields.
-    # We want generated npy to be readable b the standard npy loader.
-
-    # _header_size_info = {
-    #     (1, 0): ('<H', 'latin1'),
-    #     (2, 0): ('<I', 'latin1'),
-    #     (3, 0): ('<I', 'utf8'),
-    # }
-    # version = read_magic(buf)
-    # _check_version(version)
-    # hinfo = _header_size_info.get(version)
-    # if hinfo is None:
-    #     raise ValueError("Invalid version {!r}".format(version))
-    # hlength_type, encoding = hinfo
-    # hlength_str = _read_bytes(buf, struct.calcsize(hlength_type), "array header length")
-    # header_length = struct.unpack(hlength_type, hlength_str)[0]
-    # header = _read_bytes(buf, header_length, "array header")
-    # header = header.decode(encoding)
-    # d = ast.literal_eval(header)
-
-    # Load the array normally.
-    # buf.seek(0)
-
     arr = np.load(buf)
-
     return arr
 
 
@@ -311,12 +419,23 @@ def add_payload_histogram(payload, data, vmin, vmax):
     payload['feature_data']['histogram'] = make_histogram(data, vmin, vmax)
 
 
-def make_volume_payload(
-        fname, volume, xyz=None, values=None, short_desc=None, min_max=None):
-    assert fname
+def make_volume_histograms(volume, min_max, out):
+    """
+    Thin wrapper around VolumeRegionHistogrammer
 
+    Parameters
+    ----------
+    volume : 3D np.ndarray
+    min_max : (float, float)
+    out : dict
+    """
+    # idx: {'count': x, 'h_x': x}
+    return _default_histogrammer(volume, min_max, out)
+
+
+def _volume_data(volume, min_max=None):
     assert volume.ndim == 3
-    assert volume.shape == DEFAULT_VOLUME_SHAPE, f"{volume.shape} != {DEFAULT_VOLUME_SHAPE}"
+    # assert volume.shape == DEFAULT_VOLUME_SHAPE, f"{volume.shape} != {DEFAULT_VOLUME_SHAPE}"
 
     # Renormalize the volume array if it is not already in uint8
     if volume.dtype == np.uint8:
@@ -326,19 +445,43 @@ def make_volume_payload(
         min_max, volume_8 = renormalize_array(volume, min_max=min_max)
 
     # Convert the uint8 volume into a npy.gz buffer.
-    bytes = to_npy_gz_bytes(volume_8, extra=min_max)
+    bytes = to_npy_gz_bytes(volume_8)
     assert bytes is not None
 
     volume_b64 = base64_encode(bytes)
+
+    return {
+        'volume': volume_b64,
+        'bounds': list(map(float, min_max)),
+    }
+
+
+def make_volume_payload(
+        fname, volumes, xyz=None, values=None, short_desc=None, min_max=None):
+    assert fname
 
     # Prepare the JSON payload.
     payload = {
         'fname': fname,
         'short_desc': short_desc,
         'feature_data': {
-            'volume': volume_b64,
+            # this is {name: {"volume": "<base64>", "bounds": [min, max]}}
+            'volumes': {n: _volume_data(volume, min_max=min_max) for n, volume in volumes.items()},
+
+            'mappings': {'allen': {'data': {}}},
         }
     }
+
+    #  NOTE: first volume is used for the histogram
+    n = list(volumes.keys())[0]
+    volume = list(volumes.values())[0]
+    min_max = payload['feature_data']['volumes'][n]['bounds']
+
+    # Global histogram.
+    add_payload_histogram(payload, volume.ravel(), min_max[0], min_max[1])
+
+    # Per-region voxel histograms.
+    make_volume_histograms(volume, min_max, payload['feature_data']['mappings']['allen']['data'])
 
     # Optional xyz/values data when using create_dots()
     if xyz is not None and values is not None:
@@ -634,7 +777,7 @@ class FeatureUploader:
             _ = self._patch(f'buckets/{self.bucket_uuid}/{fname}', payload)
 
     def _post_or_patch_volume(
-            self, method, fname, volume,
+            self, method, fname, volumes,
             xyz=None, values=None,
             short_desc=None, min_max=None):
 
@@ -642,7 +785,7 @@ class FeatureUploader:
 
         # Make the volume payload.
         payload = make_volume_payload(
-            fname, volume, xyz=xyz, values=values, short_desc=short_desc, min_max=min_max)
+            fname, volumes, xyz=xyz, values=values, short_desc=short_desc, min_max=min_max)
 
         # Make a POST request to /api/buckets/<uuid>.
         if method == 'post':
@@ -760,9 +903,9 @@ class FeatureUploader:
         payload = make_features_payload(fname, data, short_desc=short_desc)
         save_payload(output_dir, fname, payload)
 
-    def local_volume(self, fname, volume, min_max=None, xyz=None, values=None, short_desc=None, output_dir=None):
+    def local_volume(self, fname, volumes, min_max=None, xyz=None, values=None, short_desc=None, output_dir=None):
         payload = make_volume_payload(
-            fname, volume, xyz=xyz, values=values, short_desc=short_desc, min_max=min_max)
+            fname, volumes, xyz=xyz, values=values, short_desc=short_desc, min_max=min_max)
         save_payload(output_dir, fname, payload)
 
     def local_dots(self, fname, xyz, values, dot_size=3, min_max=None, short_desc=None, output_dir=None):
