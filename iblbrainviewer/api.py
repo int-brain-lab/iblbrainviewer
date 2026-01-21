@@ -208,7 +208,8 @@ def renormalize_array(arr, min_max=None):
         raise ValueError("Input array must have exactly 3 dimensions.")
 
     # Compute the min and max values for the entire array
-    min_max = min_max if min_max is not None else (arr.min(), arr.max())
+    arrn = arr[~np.isnan(arr)]
+    min_max = min_max if min_max is not None else (arrn.min(), arrn.max())
     min_value, max_value = min_max
 
     # Check if the array is constant (min and max values are the same)
@@ -464,6 +465,7 @@ def make_volume_payload(
     payload = {
         'fname': fname,
         'short_desc': short_desc,
+        'is_volume': True,
         'feature_data': {
             # this is {name: {"volume": "<base64>", "bounds": [min, max]}}
             'volumes': {n: _volume_data(volume, min_max=min_max) for n, volume in volumes.items()},
